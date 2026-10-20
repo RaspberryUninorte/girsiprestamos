@@ -1,4 +1,4 @@
-# GIRSI Préstamos
+# GIRSI
 
 Equipment loan management for **GIRSI**, a student research group (*semillero de investigación*). Lab administrators use it to track which equipment is lent to which student. Students use it to check their own loans and the research projects they belong to.
 
