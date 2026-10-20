@@ -1,0 +1,120 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+
+const { supabase } = Astro.locals;
+
+let error: string | null = null;
+
+if (Astro.request.method === 'POST') {
+  const formData = await Astro.request.formData();
+  const name = String(formData.get('name') ?? '').trim();
+  const description = String(formData.get('description') ?? '').trim();
+
+  if (!name) {
+    error = 'El proyecto necesita un nombre.';
+  } else {
+    const { data: project, error: insertError } = await supabase
+      .from('projects')
+      .insert({ name, description: description || null })
+      .select('id')
+      .single();
+
+    if (insertError || !project) {
+      error = 'No se pudo crear el proyecto. Intenta de nuevo.';
+    } else {
+      return Astro.redirect(`/proyectos/${project.id}`);
+    }
+  }
+}
+
+const { data } = await supabase
+  .from('projects')
+  .select('id, name, description, status, project_members(count)')
+  .order('status')
+  .order('name');
+
+const projects = (data ?? []).map((p) => ({ ...p, memberCount: (p.project_members as any)?.[0]?.count ?? 0 }));
+
+const inputClass =
+  'w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md shadow-sm focus:outline-none focus:ring-1 focus:ring-primary';
+---
+
+<AppLayout title="Proyectos" description="Proyectos del semillero GIRSI y los estudiantes que participan en cada uno.">
+  <div class="max-w-3xl mx-auto space-y-space-md">
+    <div>
+      <h1 class="font-headline-xl text-headline-xl-mobile sm:text-headline-xl">Proyectos</h1>
+      <p class="font-body-sm text-body-sm text-on-surface-variant">Proyectos del semillero y sus integrantes ({projects.length})</p>
+    </div>
+
+    <details class="bg-surface-container-lowest rounded-xl shadow-sm group" open={Boolean(error)}>
+      <summary class="flex items-center gap-space-sm p-space-md cursor-pointer select-none list-none font-label-lg text-label-lg text-primary">
+        <span class="material-symbols-outlined text-[20px]">add</span>
+        Nuevo proyecto
+      </summary>
+      <form method="POST" class="flex flex-col gap-space-md px-space-md pb-space-md">
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Nombre</span>
+          <input type="text" name="name" required class={inputClass} />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Descripción (opcional)</span>
+          <textarea name="description" rows="3" class={inputClass}></textarea>
+        </label>
+        {error && (
+          <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-md py-space-sm">{error}</p>
+        )}
+        <div>
+          <button
+            type="submit"
+            class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary font-label-md text-label-md shadow-sm active:scale-95 transition-transform"
+          >
+            <span class="material-symbols-outlined text-[18px]">check</span>
+            <span>Crear proyecto</span>
+          </button>
+        </div>
+      </form>
+    </details>
+
+    <div class="space-y-space-sm">
+      {projects.length === 0 && (
+        <p class="font-body-sm text-body-sm text-on-surface-variant bg-surface-container-lowest rounded-xl p-space-md shadow-sm">
+          Todavía no hay proyectos registrados.
+        </p>
+      )}
+
+      {projects.map((project) => {
+        const isActive = project.status === 'activo';
+        return (
+          <a
+            href={`/proyectos/${project.id}`}
+            class="block bg-surface-container-lowest rounded-xl p-space-md shadow-sm hover:shadow transition-shadow"
+          >
+            <div class="flex items-start justify-between gap-space-sm">
+              <div class="flex flex-col min-w-0">
+                <span class="font-headline-md text-headline-md text-on-surface font-bold truncate">{project.name}</span>
+                {project.description && (
+                  <span class="font-body-sm text-body-sm text-on-surface-variant line-clamp-2">{project.description}</span>
+                )}
+              </div>
+              <span
+                class:list={[
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-label-sm text-label-sm flex-shrink-0',
+                  isActive ? 'bg-status-available-bg text-status-available-text' : 'bg-status-finished-bg text-status-finished-text',
+                ]}
+              >
+                <span class:list={['w-1.5 h-1.5 rounded-full', isActive ? 'bg-status-available-dot' : 'bg-status-finished-dot']}></span>
+                {isActive ? 'Activo' : 'Finalizado'}
+              </span>
+            </div>
+            <div class="flex items-center gap-1 mt-space-xs text-on-surface-variant">
+              <span class="material-symbols-outlined text-[16px]">group</span>
+              <span class="font-label-sm text-label-sm">
+                {project.memberCount} {project.memberCount === 1 ? 'integrante' : 'integrantes'}
+              </span>
+            </div>
+          </a>
+        );
+      })}
+    </div>
+  </div>
+</AppLayout>

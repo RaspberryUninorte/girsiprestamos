@@ -1,0 +1,120 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+import { formatDate } from '../lib/dates';
+
+const { supabase } = Astro.locals;
+
+const { data: itemStatuses } = await supabase
+  .from('item_status')
+  .select('category, status');
+
+const items = itemStatuses ?? [];
+const disponibles = items.filter((i) => i.status === 'disponible').length;
+const prestados = items.filter((i) => i.status === 'prestado').length;
+const total = items.length;
+
+const byCategory = new Map<string, { total: number; disponibles: number }>();
+for (const item of items) {
+  const entry = byCategory.get(item.category) ?? { total: 0, disponibles: 0 };
+  entry.total++;
+  if (item.status === 'disponible') entry.disponibles++;
+  byCategory.set(item.category, entry);
+}
+const categories = [...byCategory.entries()].sort(([a], [b]) => a.localeCompare(b, 'es'));
+
+const { data: activeLoans } = await supabase
+  .from('loans')
+  .select('id, student_name, student_code, started_at, items(code, model)')
+  .eq('status', 'activo')
+  .order('started_at', { ascending: false })
+  .limit(5);
+---
+
+<AppLayout title="Dashboard" description="Resumen del inventario de equipos y de los préstamos activos del laboratorio GIRSI.">
+  <div class="max-w-4xl mx-auto space-y-space-lg">
+    <div class="flex items-start justify-between gap-space-sm">
+      <div>
+        <h1 class="font-headline-xl text-headline-xl-mobile sm:text-headline-xl">Dashboard</h1>
+        <p class="font-body-sm text-body-sm text-on-surface-variant">Estado del inventario de equipos</p>
+      </div>
+      <a
+        href="/prestamos/nuevo"
+        class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary shadow-sm active:scale-95 transition-transform flex-shrink-0"
+      >
+        <span class="material-symbols-outlined text-[18px]">add</span>
+        <span class="font-label-md text-label-md">Nuevo Préstamo</span>
+      </a>
+    </div>
+
+    <!-- Panel de inventario: hero dividido -->
+    <div class="bg-surface-container-lowest rounded-2xl shadow-sm overflow-hidden grid grid-cols-1 sm:grid-cols-[1.3fr_1fr]">
+      <div class="bg-gradient-to-br from-primary-container to-primary text-on-primary p-space-lg flex flex-col justify-center gap-1">
+        <span class="font-label-sm text-label-sm uppercase tracking-wide opacity-85">Disponibles ahora</span>
+        <span class="font-headline-xl text-[46px] font-extrabold tabular-nums leading-none">{disponibles}</span>
+        <span class="font-body-sm text-body-sm opacity-80 mt-1">de {total} equipos registrados</span>
+      </div>
+      <div class="flex flex-col">
+        <div class="flex-1 flex items-center justify-between gap-space-md px-space-lg py-space-md border-b border-surface-container-low">
+          <div class="flex items-center gap-space-sm">
+            <span class="material-symbols-outlined text-status-loaned-text text-[18px]">sync_alt</span>
+            <span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wide">Prestados</span>
+          </div>
+          <span class="font-headline-md text-headline-md font-bold tabular-nums text-status-loaned-text">{prestados}</span>
+        </div>
+        <div class="flex-1 flex items-center justify-between gap-space-md px-space-lg py-space-md">
+          <div class="flex items-center gap-space-sm">
+            <span class="material-symbols-outlined text-on-surface-variant text-[18px]">inventory_2</span>
+            <span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wide">Total</span>
+          </div>
+          <span class="font-headline-md text-headline-md font-bold tabular-nums">{total}</span>
+        </div>
+      </div>
+    </div>
+
+    {categories.length > 1 && (
+      <div class="grid grid-cols-2 sm:grid-cols-3 gap-space-sm">
+        {categories.map(([category, counts]) => (
+          <a
+            href={`/inventario?categoria=${encodeURIComponent(category)}`}
+            class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col gap-0.5 hover:shadow transition-shadow min-w-0"
+          >
+            <span class="font-label-sm text-label-sm text-on-surface-variant uppercase tracking-wide truncate">{category}</span>
+            <span class="font-headline-md text-headline-md font-bold tabular-nums">
+              {counts.disponibles}<span class="font-body-sm text-body-sm text-on-surface-variant font-normal"> / {counts.total} disponibles</span>
+            </span>
+          </a>
+        ))}
+      </div>
+    )}
+
+    <!-- Préstamos activos -->
+    <div class="space-y-space-sm">
+      <div class="flex items-center justify-between">
+        <h2 class="font-headline-md text-headline-md">Préstamos activos</h2>
+        <a href="/prestamos" class="font-label-md text-label-md text-primary hover:text-surface-tint">Ver todos →</a>
+      </div>
+
+      {activeLoans && activeLoans.length > 0 ? (
+        <div class="space-y-space-sm">
+          {activeLoans.map((loan: any) => (
+            <div class="bg-surface-container-lowest rounded-xl p-space-md flex items-center justify-between gap-space-md shadow-sm">
+              <div class="flex flex-col min-w-0">
+                <span class="font-label-lg text-label-lg text-on-surface font-semibold truncate">{loan.student_name}</span>
+                <div class="flex items-center gap-1.5 text-on-surface-variant">
+                  <span class="font-label-sm text-label-sm">{loan.student_code}</span>
+                  <span class="w-1 h-1 rounded-full bg-outline-variant"></span>
+                  <span class="font-label-sm text-label-sm text-primary font-semibold">#{loan.items?.code}</span>
+                </div>
+              </div>
+              <span class="font-label-sm text-label-sm text-on-surface-variant flex-shrink-0">{formatDate(loan.started_at)}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p class="font-body-sm text-body-sm text-on-surface-variant bg-surface-container-lowest rounded-xl p-space-md shadow-sm">
+          No hay préstamos activos en este momento.
+        </p>
+      )}
+    </div>
+  </div>
+</AppLayout>

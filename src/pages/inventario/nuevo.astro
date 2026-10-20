@@ -1,0 +1,127 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import { MAX_UNITS_PER_BATCH, nextItemCodes, normalizePrefix } from '../../lib/inventory';
+
+const { supabase } = Astro.locals;
+
+const { data: existing } = await supabase.from('items').select('code, category');
+const categories = [...new Set((existing ?? []).map((i) => i.category as string))].sort((a, b) => a.localeCompare(b, 'es'));
+const prefixesInUse = [...new Set((existing ?? []).map((i) => (i.code as string).split('-')[0]))].sort();
+
+let error: string | null = null;
+const values = { category: '', model: '', prefix: '', quantity: '1', serial_number: '', description: '' };
+
+if (Astro.request.method === 'POST') {
+  const formData = await Astro.request.formData();
+  for (const key of Object.keys(values) as (keyof typeof values)[]) {
+    values[key] = String(formData.get(key) ?? '').trim();
+  }
+  const prefix = normalizePrefix(values.prefix);
+  const quantity = Number(values.quantity);
+
+  if (!values.category || !values.model || !prefix) {
+    error = 'Completa la categoría, el modelo y el prefijo del código.';
+  } else if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_UNITS_PER_BATCH) {
+    error = `La cantidad debe ser un número entre 1 y ${MAX_UNITS_PER_BATCH}.`;
+  } else if (quantity > 1 && values.serial_number) {
+    error = 'El número de serie solo aplica al agregar una unidad.';
+  } else {
+    const codes = await nextItemCodes(supabase, prefix, quantity);
+    const { error: insertError } = await supabase.from('items').insert(
+      codes.map((code) => ({
+        code,
+        category: values.category,
+        model: values.model,
+        description: values.description || null,
+        serial_number: values.serial_number || null,
+      })),
+    );
+
+    if (insertError) {
+      error = 'No se pudieron agregar los equipos. Intenta de nuevo.';
+    } else {
+      return Astro.redirect(`/inventario?agregados=${quantity}&categoria=${encodeURIComponent(values.category)}`);
+    }
+  }
+}
+
+const inputClass =
+  'w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md shadow-sm focus:outline-none focus:ring-1 focus:ring-primary';
+---
+
+<AppLayout title="Añadir equipo" breadcrumb="Inventario / Nuevo" description="Registra una o varias unidades nuevas en el inventario del laboratorio.">
+  <div class="max-w-2xl mx-auto space-y-space-md">
+    <div>
+      <h1 class="font-headline-xl text-headline-xl-mobile sm:text-headline-xl">Añadir equipo</h1>
+      <p class="font-body-sm text-body-sm text-on-surface-variant">Registra una o varias unidades nuevas en el inventario</p>
+    </div>
+
+    <form method="POST" class="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-space-md">
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Categoría</span>
+          <input type="text" name="category" required list="categories" value={values.category} class={inputClass} placeholder="Ej: Sensor, Arduino" />
+          <datalist id="categories">
+            {categories.map((c) => <option value={c} />)}
+          </datalist>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Modelo / nombre</span>
+          <input type="text" name="model" required value={values.model} class={inputClass} placeholder="Ej: Arduino Uno R3" />
+        </label>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-space-md">
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Prefijo del código</span>
+          <input
+            type="text"
+            name="prefix"
+            required
+            maxlength="10"
+            value={values.prefix}
+            class:list={[inputClass, 'uppercase']}
+            placeholder="Ej: ARD"
+          />
+          <span class="font-body-sm text-body-sm text-outline">
+            Los códigos se generan solos: PREFIJO-001, PREFIJO-002…
+            {prefixesInUse.length > 0 && ` En uso: ${prefixesInUse.join(', ')}.`}
+          </span>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Cantidad de unidades</span>
+          <input type="number" name="quantity" required min="1" max={MAX_UNITS_PER_BATCH} value={values.quantity} class={inputClass} />
+        </label>
+      </div>
+
+      <label class="flex flex-col gap-1">
+        <span class="font-label-md text-label-md text-on-surface-variant">Descripción (opcional)</span>
+        <input type="text" name="description" value={values.description} class={inputClass} placeholder="Ej: 4 GB RAM, incluye cable USB" />
+      </label>
+
+      <label class="flex flex-col gap-1">
+        <span class="font-label-md text-label-md text-on-surface-variant">Número de serie (opcional, solo para una unidad)</span>
+        <input type="text" name="serial_number" value={values.serial_number} class:list={[inputClass, 'font-mono']} />
+      </label>
+
+      {error && (
+        <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-md py-space-sm">
+          {error}
+        </p>
+      )}
+
+      <div class="flex items-center gap-space-sm pt-space-xs">
+        <button
+          type="submit"
+          class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary font-label-md text-label-md shadow-sm active:scale-95 transition-transform"
+        >
+          <span class="material-symbols-outlined text-[18px]">check</span>
+          <span>Agregar al inventario</span>
+        </button>
+        <a href="/inventario" class="font-label-md text-label-md text-on-surface-variant hover:text-on-surface px-space-md py-2.5">
+          Cancelar
+        </a>
+      </div>
+    </form>
+  </div>
+</AppLayout>

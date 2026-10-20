@@ -1,0 +1,121 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { createSupabaseServerClient } from '../lib/supabase/server';
+import { createSupabaseServiceClient } from '../lib/supabase/service';
+import { issueVerificationCode } from '../lib/verification';
+
+// Confirmación de cuenta con código de un solo uso (OTP). Se usa en lugar de un
+// enlace porque el filtro de seguridad de Outlook (Uninorte) abre los enlaces
+// automáticamente y los consume antes que el estudiante. El código lo envía la
+// app (lib/verification.ts), no Supabase.
+
+const email = (Astro.url.searchParams.get('email') ?? '').trim().toLowerCase();
+
+let error: string | null = null;
+let notice: string | null = Astro.url.searchParams.get('reenviado') === '1' ? 'Te enviamos un código nuevo.' : null;
+if (Astro.url.searchParams.get('error') === 'envio') {
+  error = 'Tu cuenta quedó creada, pero no pudimos enviar el código. Presiona "Reenviar código" en un momento.';
+}
+
+if (!email) {
+  return Astro.redirect('/registro');
+}
+
+if (Astro.request.method === 'POST') {
+  const formData = await Astro.request.formData();
+  const intent = String(formData.get('intent') ?? 'verify');
+  const supabase = createSupabaseServerClient(Astro.cookies, Astro.request.headers);
+  error = null;
+
+  if (intent === 'resend') {
+    const result = await issueVerificationCode(createSupabaseServiceClient(), email);
+    if (result === 'cooldown') {
+      error = 'Espera un minuto antes de pedir otro código.';
+    } else if (result === 'already_confirmed') {
+      error = 'Tu cuenta ya está verificada. Inicia sesión.';
+    } else if (result === 'send_failed' || result === 'error') {
+      error = 'No se pudo reenviar el código. Intenta de nuevo en unos minutos.';
+    } else {
+      // 'sent' o 'not_found': misma respuesta, para no revelar qué correos tienen cuenta.
+      return Astro.redirect(`/verificar?email=${encodeURIComponent(email)}&reenviado=1`);
+    }
+  } else {
+    const token = String(formData.get('token') ?? '').replace(/\D/g, '');
+    if (!token) {
+      error = 'Ingresa el código que te llegó al correo.';
+    } else {
+      const { error: verifyError } = await supabase.auth.verifyOtp({ email, token, type: 'email' });
+      if (verifyError) {
+        error = 'El código no es válido o ya expiró. Revísalo o pide uno nuevo.';
+      } else {
+        // verifyOtp deja la sesión iniciada: el estudiante entra directo a su panel.
+        return Astro.redirect('/mi-panel');
+      }
+    }
+  }
+  notice = null;
+}
+
+const inputClass =
+  'w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md placeholder:text-outline shadow-sm focus:outline-none focus:ring-1 focus:ring-primary transition-colors';
+---
+
+<Layout title="Verificar correo" description="Confirma tu cuenta de GIRSI Préstamos con el código que llegó a tu correo." noindex>
+  <main class="flex flex-1 items-center justify-center p-space-lg bg-surface">
+    <div class="w-full max-w-sm bg-surface-container-lowest rounded-2xl shadow-sm p-space-xl flex flex-col gap-space-lg">
+      <div class="flex flex-col items-center gap-1 text-center">
+        <img src="/girsi-logo.png" alt="GIRSI" class="h-14 w-auto object-contain" />
+        <span class="material-symbols-outlined text-primary text-[36px] mt-space-sm">mark_email_unread</span>
+        <h1 class="font-headline-md text-headline-md text-on-surface">Verifica tu correo</h1>
+        <p class="font-body-sm text-body-sm text-on-surface-variant">
+          Enviamos un código a <strong class="text-on-surface break-all">{email}</strong>. Escríbelo aquí para activar tu cuenta.
+        </p>
+      </div>
+
+      <form method="POST" class="flex flex-col gap-space-md">
+        <input type="hidden" name="intent" value="verify" />
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Código de verificación</span>
+          <input
+            type="text"
+            name="token"
+            required
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            pattern="[0-9 ]{6,12}"
+            maxlength="12"
+            class:list={[inputClass, 'text-center tracking-[0.4em] font-mono text-[20px]']}
+            placeholder="••••••••"
+          />
+        </label>
+
+        {notice && (
+          <p class="font-body-sm text-body-sm text-status-available-text bg-status-available-bg rounded-lg px-space-sm py-2">{notice}</p>
+        )}
+        {error && (
+          <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-sm py-2">{error}</p>
+        )}
+
+        <button
+          type="submit"
+          class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary font-label-md text-label-md shadow-sm active:scale-95 transition-transform"
+        >
+          Verificar y entrar
+        </button>
+      </form>
+
+      <form method="POST" class="flex flex-col items-center gap-1 text-center">
+        <input type="hidden" name="intent" value="resend" />
+        <span class="font-body-sm text-body-sm text-on-surface-variant">¿No te llegó? Revisa también la carpeta de correo no deseado.</span>
+        <button type="submit" class="font-label-md text-label-md text-primary font-semibold hover:text-surface-tint">
+          Reenviar código
+        </button>
+      </form>
+
+      <p class="font-body-sm text-body-sm text-on-surface-variant text-center">
+        ¿Ya verificaste tu cuenta?
+        <a href="/login" class="text-primary font-semibold hover:text-surface-tint">Inicia sesión</a>
+      </p>
+    </div>
+  </main>
+</Layout>

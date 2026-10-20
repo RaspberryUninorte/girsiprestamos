@@ -1,0 +1,28 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { homeFor } from '../lib/auth';
+
+const { user, profile } = Astro.locals;
+const homeHref = user ? homeFor(profile) : '/login';
+const homeLabel = user ? 'Volver al inicio' : 'Ir a iniciar sesión';
+---
+
+<Layout title="Página no encontrada" description="La página que buscas no existe en GIRSI Préstamos." noindex>
+  <main class="flex flex-1 items-center justify-center p-space-lg bg-surface">
+    <div class="w-full max-w-sm bg-surface-container-lowest rounded-2xl shadow-sm p-space-xl flex flex-col items-center gap-space-md text-center">
+      <img src="/girsi-logo.png" alt="GIRSI" class="h-12 w-auto object-contain" />
+      <span class="font-headline-xl text-[56px] font-extrabold text-primary leading-none tabular-nums">404</span>
+      <h1 class="font-headline-md text-headline-md text-on-surface">Página no encontrada</h1>
+      <p class="font-body-sm text-body-sm text-on-surface-variant">
+        La dirección <span class="font-mono break-all">{Astro.url.pathname}</span> no existe o fue movida.
+      </p>
+      <a
+        href={homeHref}
+        class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary font-label-md text-label-md shadow-sm active:scale-95 transition-transform"
+      >
+        <span class="material-symbols-outlined text-[18px]">home</span>
+        <span>{homeLabel}</span>
+      </a>
+    </div>
+  </main>
+</Layout>

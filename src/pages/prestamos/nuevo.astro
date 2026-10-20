@@ -1,0 +1,378 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import sharp from 'sharp';
+import { todayInBogota, bogotaStartOfDayToUtc } from '../../lib/dates';
+import { sendLoanCreatedEmail } from '../../lib/email';
+import { RASPBERRY_PI_CATEGORY } from '../../lib/inventory';
+
+const MAX_DIMENSION = 1600;
+const JPEG_QUALITY = 82;
+
+async function compressPhoto(file: File): Promise<Buffer> {
+  const input = Buffer.from(await file.arrayBuffer());
+  try {
+    return await sharp(input)
+      .rotate() // respeta la orientación EXIF antes de re-codificar
+      .resize({ width: MAX_DIMENSION, height: MAX_DIMENSION, fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: JPEG_QUALITY })
+      .toBuffer();
+  } catch {
+    throw new Error(
+      'No se pudo procesar una de las fotos. Si la tomaste con iPhone en formato HEIC, cambia a JPG en ' +
+        'Ajustes → Cámara → Formatos → "Más compatible", o conviértela a JPG/PNG antes de subirla.',
+    );
+  }
+}
+
+const { supabase } = Astro.locals;
+
+const { data: availableItems } = await supabase
+  .from('item_status')
+  .select('id, code, category, model')
+  .eq('status', 'disponible')
+  .order('category')
+  .order('code');
+
+const { data: registeredStudents } = await supabase
+  .from('profiles')
+  .select('id, full_name, student_code, email')
+  .eq('role', 'estudiante')
+  .order('full_name');
+
+let error: string | null = null;
+let selectedProfileId = '';
+
+if (Astro.request.method === 'POST') {
+  const formData = await Astro.request.formData();
+  selectedProfileId = String(formData.get('profile_id') ?? '');
+  // Solo se presta a estudiantes con cuenta, y sus datos salen del perfil (no
+  // del formulario): así el préstamo siempre aparece en su panel, que filtra
+  // por el correo de la cuenta.
+  const student = registeredStudents?.find((s) => s.id === selectedProfileId);
+  const itemId = String(formData.get('item_id') ?? '');
+  const startDate = String(formData.get('start_date') ?? '').trim();
+  const expectedReturnDate = String(formData.get('expected_return_date') ?? '').trim();
+  const selectedItem = availableItems?.find((item) => item.id === itemId);
+  // Los accesorios solo existen para Raspberry Pi; para otro equipo se ignoran.
+  const acceptsAccessories = selectedItem?.category === RASPBERRY_PI_CATEGORY;
+  const includesMicrosd = acceptsAccessories && formData.get('includes_microsd') === 'on';
+  const includesUsbEthModule = acceptsAccessories && formData.get('includes_usb_eth_module') === 'on';
+  const photoTop = formData.get('photo_top') as File | null;
+  const photoBottom = formData.get('photo_bottom') as File | null;
+
+  if (!student) {
+    error = 'Selecciona un estudiante registrado. Si no aparece en la lista, primero debe crear su cuenta en /registro.';
+  } else if (!itemId || !startDate) {
+    error = 'Completa todos los campos obligatorios.';
+  } else if (expectedReturnDate && expectedReturnDate < startDate) {
+    error = 'La fecha de devolución esperada no puede ser anterior a la fecha de inicio.';
+  } else if (!photoTop || photoTop.size === 0 || !photoBottom || photoBottom.size === 0) {
+    error = 'Debes subir las dos fotos (superior e inferior).';
+  } else {
+    const { data: itemCheck } = await supabase
+      .from('item_status')
+      .select('status')
+      .eq('id', itemId)
+      .single();
+
+    if (!itemCheck || itemCheck.status !== 'disponible') {
+      error = 'Ese equipo ya no está disponible. Elige otro.';
+    } else {
+      const { data: loan, error: insertError } = await supabase
+        .from('loans')
+        .insert({
+          item_id: itemId,
+          student_name: student.full_name,
+          student_code: student.student_code ?? '',
+          student_email: student.email,
+          started_at: bogotaStartOfDayToUtc(startDate),
+          expected_return_date: expectedReturnDate || null,
+          includes_microsd: includesMicrosd,
+          includes_usb_eth_module: includesUsbEthModule,
+        })
+        .select('id')
+        .single();
+
+      if (insertError || !loan) {
+        error = 'No se pudo crear el préstamo. Puede que ese equipo ya tenga un préstamo activo.';
+      } else {
+        const uploadPhoto = async (file: File, label: 'top' | 'bottom') => {
+          const compressed = await compressPhoto(file);
+          const path = `${loan.id}/${label}.jpg`;
+          const { error: uploadError } = await supabase.storage
+            .from('loan-photos')
+            .upload(path, compressed, { contentType: 'image/jpeg', upsert: true });
+          if (uploadError) throw uploadError;
+          return path;
+        };
+
+        try {
+          const topPath = await uploadPhoto(photoTop, 'top');
+          const bottomPath = await uploadPhoto(photoBottom, 'bottom');
+
+          await supabase
+            .from('loans')
+            .update({ photo_top_url: topPath, photo_bottom_url: bottomPath })
+            .eq('id', loan.id);
+
+          await sendLoanCreatedEmail({
+            student_name: student.full_name,
+            student_email: student.email,
+            started_at: bogotaStartOfDayToUtc(startDate),
+            ended_at: null,
+            expected_return_date: expectedReturnDate || null,
+            item_code: selectedItem?.code ?? '—',
+            item_category: selectedItem?.category ?? 'Equipo',
+            item_model: selectedItem?.model ?? '—',
+          });
+
+          return Astro.redirect(`/prestamos/${loan.id}`);
+        } catch (uploadErr) {
+          await supabase.from('loans').delete().eq('id', loan.id);
+          error =
+            uploadErr instanceof Error
+              ? uploadErr.message
+              : 'El préstamo no se creó porque falló la subida de las fotos. Intenta de nuevo.';
+        }
+      }
+    }
+  }
+}
+
+const items = availableItems ?? [];
+const students = registeredStudents ?? [];
+
+const itemsByCategory = new Map<string, typeof items>();
+for (const item of items) {
+  const list = itemsByCategory.get(item.category) ?? [];
+  list.push(item);
+  itemsByCategory.set(item.category, list);
+}
+---
+
+<AppLayout title="Nuevo Préstamo" breadcrumb="Préstamos / Nuevo" description="Registra la entrega de un equipo del laboratorio a un estudiante registrado.">
+  <div class="max-w-2xl mx-auto space-y-space-md">
+    <div>
+      <h1 class="font-headline-xl text-headline-xl-mobile sm:text-headline-xl">Nuevo Préstamo</h1>
+      <p class="font-body-sm text-body-sm text-on-surface-variant">Registra la entrega de un equipo a un estudiante</p>
+    </div>
+
+    {items.length === 0 && (
+      <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-md py-space-sm">
+        No hay equipos disponibles en este momento. Todos están prestados.
+      </p>
+    )}
+
+    <form method="POST" enctype="multipart/form-data" class="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
+      {students.length === 0 && (
+        <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-md py-space-sm">
+          Todavía no hay estudiantes registrados. Para recibir un préstamo, el estudiante primero debe crear su cuenta en /registro.
+        </p>
+      )}
+
+      <label class="flex flex-col gap-1">
+        <span class="font-label-md text-label-md text-on-surface-variant">Estudiante</span>
+        <select
+          name="profile_id"
+          id="profile_id"
+          required
+          disabled={students.length === 0}
+          class="w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md shadow-sm focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+        >
+          <option value="" disabled selected={!selectedProfileId}>Selecciona un estudiante registrado</option>
+          {students.map((student) => (
+            <option value={student.id} selected={student.id === selectedProfileId}>
+              {student.full_name}{student.student_code ? ` (${student.student_code})` : ''} · {student.email}
+            </option>
+          ))}
+        </select>
+        <span class="font-body-sm text-body-sm text-outline">
+          Nombre, código y correo se toman de la cuenta del estudiante. Si no aparece, primero debe registrarse en /registro.
+        </span>
+      </label>
+
+      <label class="flex flex-col gap-1">
+        <span class="font-label-md text-label-md text-on-surface-variant">Equipo</span>
+        <select
+          name="item_id"
+          id="item_id"
+          required
+          disabled={items.length === 0}
+          class="w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md shadow-sm focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+        >
+          <option value="" disabled selected>Selecciona un equipo disponible</option>
+          {[...itemsByCategory.entries()].map(([category, categoryItems]) => (
+            <optgroup label={category}>
+              {categoryItems.map((item) => (
+                <option value={item.id} data-category={item.category}>{item.code} — {item.model}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </label>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-space-md">
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Fecha de inicio</span>
+          <input
+            type="date"
+            name="start_date"
+            required
+            value={todayInBogota()}
+            class="w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md shadow-sm focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Devolución esperada (opcional)</span>
+          <input
+            type="date"
+            name="expected_return_date"
+            class="w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md shadow-sm focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+        </label>
+      </div>
+
+      <div id="accessories" class="flex flex-col gap-1" data-category={RASPBERRY_PI_CATEGORY} hidden>
+        <span class="font-label-md text-label-md text-on-surface-variant">Accesorios incluidos</span>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-space-sm">
+          <label class="flex items-center gap-space-sm p-space-sm rounded-xl bg-surface-container-low cursor-pointer select-none">
+            <input type="checkbox" name="includes_microsd" class="w-4 h-4 rounded accent-primary" />
+            <span class="font-body-md text-body-md text-on-surface">Tarjeta microSD</span>
+          </label>
+          <label class="flex items-center gap-space-sm p-space-sm rounded-xl bg-surface-container-low cursor-pointer select-none">
+            <input type="checkbox" name="includes_usb_eth_module" class="w-4 h-4 rounded accent-primary" />
+            <span class="font-body-md text-body-md text-on-surface">Módulo expansor USB/Ethernet</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-space-md">
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Foto — vista superior</span>
+          <input
+            type="file"
+            id="photo_top"
+            name="photo_top"
+            accept="image/*,.heic,.heif"
+            required
+            data-heic-convert
+            class="w-full text-body-sm font-body-sm file:mr-3 file:px-space-sm file:py-1.5 file:rounded-lg file:border-0 file:bg-surface-container file:text-on-surface-variant"
+          />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Foto — vista inferior</span>
+          <input
+            type="file"
+            id="photo_bottom"
+            name="photo_bottom"
+            accept="image/*,.heic,.heif"
+            required
+            data-heic-convert
+            class="w-full text-body-sm font-body-sm file:mr-3 file:px-space-sm file:py-1.5 file:rounded-lg file:border-0 file:bg-surface-container file:text-on-surface-variant"
+          />
+        </label>
+      </div>
+
+      {error && (
+        <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-md py-space-sm">
+          {error}
+        </p>
+      )}
+
+      <div class="flex items-center gap-space-sm pt-space-xs">
+        <button
+          type="submit"
+          id="submit-loan"
+          disabled={items.length === 0 || students.length === 0}
+          data-no-items={items.length === 0 || students.length === 0 ? 'true' : 'false'}
+          class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary font-label-md text-label-md shadow-sm active:scale-95 transition-transform disabled:opacity-50"
+        >
+          <span class="material-symbols-outlined text-[18px]">check</span>
+          <span>Crear préstamo</span>
+        </button>
+        <a href="/prestamos" class="font-label-md text-label-md text-on-surface-variant hover:text-on-surface px-space-md py-2.5">
+          Cancelar
+        </a>
+      </div>
+    </form>
+  </div>
+</AppLayout>
+
+<script>
+  import { isHeic, heicTo } from 'heic-to';
+
+  const HEIC_PATTERN = /\.(heic|heif)$/i;
+  const MAX_DIMENSION = 1600;
+  const JPEG_QUALITY = 0.85;
+  let pendingConversions = 0;
+
+  function setSubmitBusy(busy: boolean) {
+    const button = document.getElementById('submit-loan') as HTMLButtonElement | null;
+    if (!button) return;
+    button.disabled = busy || button.dataset.noItems === 'true';
+  }
+
+  async function resizeToJpeg(blob: Blob, maxDim: number, quality: number): Promise<Blob> {
+    const bitmap = await createImageBitmap(blob);
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+    const width = Math.round(bitmap.width * scale);
+    const height = Math.round(bitmap.height * scale);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('No se pudo obtener el contexto de canvas');
+    ctx.drawImage(bitmap, 0, 0, width, height);
+
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((out) => (out ? resolve(out) : reject(new Error('toBlob fallo'))), 'image/jpeg', quality);
+    });
+  }
+
+  // Convierte HEIC a JPEG si hace falta, y siempre redimensiona/comprime antes de
+  // subir: una foto de iPhone sin tocar puede pesar varios MB y Vercel rechaza
+  // peticiones grandes con 413 antes de que el servidor pueda comprimirla.
+  async function processPhoto(input: HTMLInputElement) {
+    const file = input.files?.[0];
+    if (!file) return;
+
+    pendingConversions++;
+    setSubmitBusy(true);
+
+    try {
+      const looksHeic =
+        HEIC_PATTERN.test(file.name) || file.type === 'image/heic' || file.type === 'image/heif' || (await isHeic(file));
+      const sourceBlob = looksHeic ? await heicTo({ blob: file, type: 'image/jpeg', quality: 0.9 }) : file;
+      const resizedBlob = await resizeToJpeg(sourceBlob, MAX_DIMENSION, JPEG_QUALITY);
+
+      const baseName = file.name.replace(/\.[^.]+$/, '');
+      const processedFile = new File([resizedBlob], `${baseName}.jpg`, { type: 'image/jpeg' });
+
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(processedFile);
+      input.files = dataTransfer.files;
+    } catch (err) {
+      console.error('Fallo el procesamiento de la foto en el navegador:', err);
+    } finally {
+      pendingConversions--;
+      setSubmitBusy(pendingConversions > 0);
+    }
+  }
+
+  document.querySelectorAll<HTMLInputElement>('input[data-heic-convert]').forEach((input) => {
+    input.addEventListener('change', () => processPhoto(input));
+  });
+
+  // Los accesorios (microSD, módulo USB/Ethernet) solo aplican a Raspberry Pi.
+  const itemSelect = document.getElementById('item_id') as HTMLSelectElement | null;
+  const accessories = document.getElementById('accessories');
+  function syncAccessories() {
+    if (!itemSelect || !accessories) return;
+    const category = itemSelect.selectedOptions[0]?.dataset.category;
+    accessories.hidden = category !== accessories.dataset.category;
+  }
+  itemSelect?.addEventListener('change', syncAccessories);
+  syncAccessories();
+
+</script>

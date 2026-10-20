@@ -1,0 +1,139 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { createSupabaseServiceClient } from '../lib/supabase/service';
+import { issueVerificationCode } from '../lib/verification';
+import { PUBLIC_PAGES } from '../lib/seo';
+
+const seo = PUBLIC_PAGES.find((p) => p.path === '/registro')!;
+
+const MIN_PASSWORD_LENGTH = 8;
+
+let error: string | null = null;
+const values = { full_name: '', student_code: '', email: '' };
+
+if (Astro.request.method === 'POST') {
+  const formData = await Astro.request.formData();
+  values.full_name = String(formData.get('full_name') ?? '').trim();
+  values.student_code = String(formData.get('student_code') ?? '').trim();
+  values.email = String(formData.get('email') ?? '').trim().toLowerCase();
+  const password = String(formData.get('password') ?? '');
+  const passwordConfirm = String(formData.get('password_confirm') ?? '');
+
+  if (!values.full_name || !values.student_code || !values.email || !password) {
+    error = 'Completa todos los campos.';
+  } else if (password.length < MIN_PASSWORD_LENGTH) {
+    error = `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`;
+  } else if (password !== passwordConfirm) {
+    error = 'Las contraseñas no coinciden.';
+  } else {
+    // Crea la cuenta sin confirmar y envía el código desde la app (lib/verification.ts).
+    // full_name/student_code viajan como metadata y el trigger handle_new_user
+    // (migracion 0010) los copia a profiles. El rol siempre queda 'estudiante'.
+    const result = await issueVerificationCode(createSupabaseServiceClient(), values.email, {
+      password,
+      fullName: values.full_name,
+      studentCode: values.student_code,
+    });
+    const verifyUrl = `/verificar?email=${encodeURIComponent(values.email)}`;
+
+    if (result === 'sent' || result === 'cooldown') {
+      return Astro.redirect(verifyUrl);
+    } else if (result === 'send_failed') {
+      return Astro.redirect(`${verifyUrl}&error=envio`);
+    } else if (result === 'already_confirmed') {
+      error = 'Ya existe una cuenta con ese correo. Inicia sesión.';
+    } else {
+      error = 'No se pudo crear la cuenta. Revisa los datos e intenta de nuevo.';
+    }
+  }
+}
+
+const inputClass =
+  'w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md placeholder:text-outline shadow-sm focus:outline-none focus:ring-1 focus:ring-primary transition-colors';
+---
+
+<Layout title={seo.title} description={seo.description}>
+  <main class="flex flex-1 items-center justify-center p-space-lg bg-surface">
+    <div class="w-full max-w-sm bg-surface-container-lowest rounded-2xl shadow-sm p-space-xl flex flex-col gap-space-lg">
+      <div class="flex flex-col items-center gap-1 text-center">
+        <img src="/girsi-logo.png" alt="GIRSI" class="h-14 w-auto object-contain" />
+        <div class="flex flex-col gap-0.5">
+          <h1 class="font-headline-md text-headline-md text-on-surface mt-space-sm">Registro de estudiantes</h1>
+          <span class="font-body-sm text-body-sm text-on-surface-variant">Consulta tus préstamos y proyectos</span>
+        </div>
+      </div>
+
+      <form method="POST" class="flex flex-col gap-space-md">
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Nombre completo</span>
+          <input type="text" name="full_name" required autocomplete="name" value={values.full_name} class={inputClass} />
+        </label>
+
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Código de estudiante</span>
+          <input type="text" name="student_code" required value={values.student_code} class={inputClass} />
+        </label>
+
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Correo</span>
+          <input
+            type="email"
+            name="email"
+            required
+            autocomplete="email"
+            value={values.email}
+            class={inputClass}
+            placeholder="tu.correo@uninorte.edu.co"
+          />
+          <span class="font-body-sm text-body-sm text-outline">
+            Usa el mismo correo con el que te registran los préstamos en el laboratorio.
+          </span>
+        </label>
+
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Contraseña</span>
+          <input
+            type="password"
+            name="password"
+            required
+            minlength={MIN_PASSWORD_LENGTH}
+            autocomplete="new-password"
+            class={inputClass}
+            placeholder="••••••••"
+          />
+        </label>
+
+        <label class="flex flex-col gap-1">
+          <span class="font-label-md text-label-md text-on-surface-variant">Confirmar contraseña</span>
+          <input
+            type="password"
+            name="password_confirm"
+            required
+            minlength={MIN_PASSWORD_LENGTH}
+            autocomplete="new-password"
+            class={inputClass}
+            placeholder="••••••••"
+          />
+        </label>
+
+        {error && (
+          <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-sm py-2">
+            {error}
+          </p>
+        )}
+
+        <button
+          type="submit"
+          class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary font-label-md text-label-md shadow-sm active:scale-95 transition-transform mt-1"
+        >
+          Crear cuenta
+        </button>
+
+        <p class="font-body-sm text-body-sm text-on-surface-variant text-center">
+          ¿Ya tienes cuenta?
+          <a href="/login" class="text-primary font-semibold hover:text-surface-tint">Inicia sesión</a>
+        </p>
+      </form>
+    </div>
+  </main>
+</Layout>

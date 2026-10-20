@@ -1,0 +1,105 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+
+const { supabase } = Astro.locals;
+
+const q = Astro.url.searchParams.get('q')?.trim() ?? '';
+
+const { data: studentsData } = await supabase
+  .from('active_loans_per_student')
+  .select('*')
+  .order('active_loans', { ascending: false })
+  .order('student_name');
+
+let students = studentsData ?? [];
+
+if (q) {
+  const needle = q.toLowerCase();
+  students = students.filter((s) =>
+    [s.student_name, s.student_code, s.student_email].filter(Boolean).join(' ').toLowerCase().includes(needle),
+  );
+}
+
+const studentCodes = students.map((s) => s.student_code);
+
+const { data: activeLoansData } = studentCodes.length
+  ? await supabase
+      .from('loans')
+      .select('student_code, items(code)')
+      .eq('status', 'activo')
+      .in('student_code', studentCodes)
+  : { data: [] };
+
+const itemsByStudent = new Map<string, string[]>();
+for (const loan of activeLoansData ?? []) {
+  const code = (loan.items as any)?.code;
+  if (!code) continue;
+  const list = itemsByStudent.get(loan.student_code) ?? [];
+  list.push(code);
+  itemsByStudent.set(loan.student_code, list);
+}
+---
+
+<AppLayout title="Estudiantes" description="Estudiantes con préstamos activos y los equipos que tienen asignados.">
+  <div class="max-w-3xl mx-auto space-y-space-md">
+    <div>
+      <h1 class="font-headline-xl text-headline-xl-mobile sm:text-headline-xl">Estudiantes</h1>
+      <p class="font-body-sm text-body-sm text-on-surface-variant">
+        Estudiantes con préstamos activos ({students.length})
+      </p>
+    </div>
+
+    <form method="GET" action="/estudiantes" class="relative w-full">
+      <div class="absolute inset-y-0 left-3.5 flex items-center pointer-events-none text-outline">
+        <span class="material-symbols-outlined text-[20px]">search</span>
+      </div>
+      <input
+        type="text"
+        name="q"
+        value={q}
+        class="w-full pl-10 pr-4 py-2.5 bg-surface-container-lowest text-on-surface rounded-xl font-body-md text-body-md placeholder:text-outline shadow-sm focus:outline-none focus:bg-surface-container-low transition-colors"
+        placeholder="Buscar estudiante o código..."
+      />
+    </form>
+
+    <div class="space-y-space-sm">
+      {students.length === 0 && (
+        <p class="font-body-sm text-body-sm text-on-surface-variant bg-surface-container-lowest rounded-xl p-space-md shadow-sm">
+          {q ? 'No se encontraron estudiantes con esa búsqueda.' : 'Ningún estudiante tiene préstamos activos en este momento.'}
+        </p>
+      )}
+
+      {students.map((student) => {
+        const studentItems = itemsByStudent.get(student.student_code) ?? [];
+        const hasMultiple = student.active_loans > 1;
+        return (
+          <div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex items-center justify-between gap-space-md">
+            <div class="flex items-center gap-space-md min-w-0">
+              <div class="w-11 h-11 rounded-full bg-primary-container text-on-primary flex items-center justify-center flex-shrink-0 font-label-lg text-label-lg font-bold">
+                {student.student_name.slice(0, 2).toUpperCase()}
+              </div>
+              <div class="flex flex-col min-w-0">
+                <span class="font-label-lg text-label-lg text-on-surface font-semibold truncate">{student.student_name}</span>
+                <span class="font-body-sm text-body-sm text-on-surface-variant truncate">{student.student_code} · {student.student_email}</span>
+                <div class="flex items-center gap-1 mt-1 flex-wrap">
+                  {studentItems.map((code) => (
+                    <span class="font-label-sm text-label-sm text-primary font-semibold bg-surface-container-low px-2 py-0.5 rounded">#{code}</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <span
+              class:list={[
+                'inline-flex items-center justify-center px-3 py-1 rounded-full font-label-md text-label-md font-semibold flex-shrink-0',
+                hasMultiple ? 'bg-status-loaned-bg text-status-loaned-text' : 'bg-surface-container text-on-surface-variant',
+              ]}
+            >
+              {student.active_loans} {student.active_loans === 1 ? 'equipo' : 'equipos'}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+</AppLayout>

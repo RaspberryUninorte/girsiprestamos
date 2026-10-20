@@ -1,0 +1,195 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import { formatDate } from '../../lib/dates';
+
+const { id } = Astro.params;
+const { supabase } = Astro.locals;
+
+let error: string | null = null;
+
+// Todas las acciones del proyecto llegan como POST a esta misma pagina,
+// distinguidas por el campo `intent`.
+if (Astro.request.method === 'POST') {
+  const formData = await Astro.request.formData();
+  const intent = String(formData.get('intent') ?? '');
+  const profileId = String(formData.get('profile_id') ?? '');
+
+  if (intent === 'add_member' && profileId) {
+    const { error: addError } = await supabase.from('project_members').insert({ project_id: id, profile_id: profileId });
+    if (addError) error = 'No se pudo agregar al estudiante. Puede que ya sea integrante.';
+  } else if (intent === 'remove_member' && profileId) {
+    await supabase.from('project_members').delete().eq('project_id', id).eq('profile_id', profileId);
+  } else if (intent === 'update') {
+    const name = String(formData.get('name') ?? '').trim();
+    const description = String(formData.get('description') ?? '').trim();
+    const status = formData.get('status') === 'finalizado' ? 'finalizado' : 'activo';
+    if (!name) {
+      error = 'El proyecto necesita un nombre.';
+    } else {
+      await supabase.from('projects').update({ name, description: description || null, status }).eq('id', id);
+    }
+  } else if (intent === 'delete') {
+    await supabase.from('projects').delete().eq('id', id);
+    return Astro.redirect('/proyectos');
+  }
+
+  if (!error) return Astro.redirect(`/proyectos/${id}`);
+}
+
+const { data: project } = await supabase
+  .from('projects')
+  .select('id, name, description, status, created_at, project_members(added_at, profiles(id, full_name, student_code, email))')
+  .eq('id', id)
+  .single();
+
+if (!project) {
+  return Astro.redirect('/proyectos');
+}
+
+const members = ((project.project_members as any[]) ?? [])
+  .map((m) => ({ ...m.profiles, added_at: m.added_at }))
+  .sort((a, b) => a.full_name.localeCompare(b.full_name, 'es'));
+const memberIds = new Set(members.map((m) => m.id));
+
+const { data: studentsData } = await supabase
+  .from('profiles')
+  .select('id, full_name, student_code, email')
+  .eq('role', 'estudiante')
+  .order('full_name');
+
+const candidates = (studentsData ?? []).filter((s) => !memberIds.has(s.id));
+
+const inputClass =
+  'w-full px-space-md py-2.5 bg-surface-container-low text-on-surface rounded-xl font-body-md text-body-md shadow-sm focus:outline-none focus:ring-1 focus:ring-primary';
+---
+
+<AppLayout
+  title={`Proyecto ${project.name}`}
+  breadcrumb={`Proyectos / ${project.name}`}
+  description={`Integrantes y datos del proyecto ${project.name} del semillero GIRSI.`}
+>
+  <div class="max-w-3xl mx-auto space-y-space-md">
+    <div class="flex items-start justify-between gap-space-sm">
+      <div class="min-w-0">
+        <h1 class="font-headline-xl text-headline-xl-mobile sm:text-headline-xl break-words">{project.name}</h1>
+        <p class="font-body-sm text-body-sm text-on-surface-variant">Creado el {formatDate(project.created_at)}</p>
+      </div>
+      <form
+        method="POST"
+        onsubmit="return confirm('¿Eliminar este proyecto? Los estudiantes dejarán de verlo en su panel.')"
+      >
+        <input type="hidden" name="intent" value="delete" />
+        <button
+          type="submit"
+          class="h-10 px-space-md bg-error-container hover:bg-error/20 text-error font-label-md text-label-md rounded-lg flex items-center gap-space-xs transition-colors"
+        >
+          <span class="material-symbols-outlined text-[18px]">delete</span>
+          <span>Eliminar</span>
+        </button>
+      </form>
+    </div>
+
+    {error && (
+      <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-md py-space-sm">{error}</p>
+    )}
+
+    <!-- Integrantes -->
+    <div class="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
+      <div class="flex items-center gap-space-sm">
+        <span class="material-symbols-outlined text-primary text-[22px]">group</span>
+        <h2 class="font-headline-md text-headline-md text-on-surface">Integrantes ({members.length})</h2>
+      </div>
+
+      {members.length === 0 && (
+        <p class="font-body-sm text-body-sm text-on-surface-variant">Aún no hay estudiantes asignados.</p>
+      )}
+
+      <div class="flex flex-col gap-space-sm">
+        {members.map((member) => (
+          <div class="flex items-center justify-between gap-space-md p-space-sm bg-surface-container-low rounded-lg">
+            <div class="flex items-center gap-space-sm min-w-0">
+              <div class="w-9 h-9 rounded-full bg-primary-container text-on-primary flex items-center justify-center flex-shrink-0 font-label-md text-label-md font-bold">
+                {member.full_name.slice(0, 2).toUpperCase()}
+              </div>
+              <div class="flex flex-col min-w-0">
+                <span class="font-label-lg text-label-lg text-on-surface truncate">{member.full_name}</span>
+                <span class="font-body-sm text-body-sm text-on-surface-variant truncate">
+                  {member.student_code ? `${member.student_code} · ` : ''}{member.email}
+                </span>
+              </div>
+            </div>
+            <form method="POST">
+              <input type="hidden" name="intent" value="remove_member" />
+              <input type="hidden" name="profile_id" value={member.id} />
+              <button
+                type="submit"
+                title="Quitar del proyecto"
+                class="text-on-surface-variant hover:text-error p-space-xs rounded-lg hover:bg-error-container/40 transition-colors"
+              >
+                <span class="material-symbols-outlined text-[20px]">person_remove</span>
+              </button>
+            </form>
+          </div>
+        ))}
+      </div>
+
+      {candidates.length > 0 ? (
+        <form method="POST" class="flex flex-col sm:flex-row gap-space-sm">
+          <input type="hidden" name="intent" value="add_member" />
+          <select name="profile_id" required class={inputClass}>
+            <option value="" disabled selected>Selecciona un estudiante registrado</option>
+            {candidates.map((student) => (
+              <option value={student.id}>
+                {student.full_name}{student.student_code ? ` (${student.student_code})` : ''} · {student.email}
+              </option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary font-label-md text-label-md shadow-sm active:scale-95 transition-transform flex-shrink-0"
+          >
+            <span class="material-symbols-outlined text-[18px]">person_add</span>
+            <span>Agregar</span>
+          </button>
+        </form>
+      ) : (
+        <p class="font-body-sm text-body-sm text-outline">
+          No hay más estudiantes registrados para agregar. Los estudiantes aparecen aquí cuando crean su cuenta en /registro.
+        </p>
+      )}
+    </div>
+
+    <!-- Datos del proyecto -->
+    <form method="POST" class="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
+      <input type="hidden" name="intent" value="update" />
+      <div class="flex items-center gap-space-sm">
+        <span class="material-symbols-outlined text-primary text-[22px]">edit</span>
+        <h2 class="font-headline-md text-headline-md text-on-surface">Datos del proyecto</h2>
+      </div>
+      <label class="flex flex-col gap-1">
+        <span class="font-label-md text-label-md text-on-surface-variant">Nombre</span>
+        <input type="text" name="name" required value={project.name} class={inputClass} />
+      </label>
+      <label class="flex flex-col gap-1">
+        <span class="font-label-md text-label-md text-on-surface-variant">Descripción</span>
+        <textarea name="description" rows="3" class={inputClass}>{project.description ?? ''}</textarea>
+      </label>
+      <label class="flex flex-col gap-1">
+        <span class="font-label-md text-label-md text-on-surface-variant">Estado</span>
+        <select name="status" class={inputClass}>
+          <option value="activo" selected={project.status === 'activo'}>Activo</option>
+          <option value="finalizado" selected={project.status === 'finalizado'}>Finalizado</option>
+        </select>
+      </label>
+      <div>
+        <button
+          type="submit"
+          class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary font-label-md text-label-md shadow-sm active:scale-95 transition-transform"
+        >
+          <span class="material-symbols-outlined text-[18px]">save</span>
+          <span>Guardar cambios</span>
+        </button>
+      </div>
+    </form>
+  </div>
+</AppLayout>

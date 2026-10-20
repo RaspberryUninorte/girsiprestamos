@@ -1,0 +1,161 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import { formatDate, formatDateOnly, isOverdue } from '../../lib/dates';
+import { escapeLike } from '../../lib/auth';
+
+const { supabase, user, profile } = Astro.locals;
+const email = user?.email ?? '';
+
+// El RLS ya limita a un estudiante a sus propios préstamos; el filtro por
+// correo hace que el panel muestre lo mismo aunque lo abra un admin.
+const { data: loansData } = await supabase
+  .from('loans')
+  .select('id, started_at, ended_at, expected_return_date, status, includes_microsd, includes_usb_eth_module, items(code, category, model)')
+  .ilike('student_email', escapeLike(email))
+  .order('started_at', { ascending: false });
+
+const loans = loansData ?? [];
+const activeLoans = loans.filter((l) => l.status === 'activo');
+const pastLoans = loans.filter((l) => l.status !== 'activo');
+
+const { data: membershipsData } = await supabase
+  .from('project_members')
+  .select('projects(id, name, description, status, project_members(profiles(id, full_name)))')
+  .eq('profile_id', user?.id ?? '');
+
+const projects = (membershipsData ?? [])
+  .map((m) => m.projects as any)
+  .filter(Boolean)
+  .map((p) => ({
+    ...p,
+    teammates: ((p.project_members as any[]) ?? [])
+      .map((pm) => pm.profiles)
+      .filter((t) => t && t.id !== user?.id)
+      .map((t) => t.full_name as string),
+  }))
+  .sort((a, b) => (a.status === b.status ? a.name.localeCompare(b.name, 'es') : a.status === 'activo' ? -1 : 1));
+
+const firstName = (profile?.full_name || email).split(' ')[0];
+---
+
+<AppLayout title="Mi panel" description="Tus préstamos de equipos y tus proyectos en el semillero GIRSI.">
+  <div class="max-w-3xl mx-auto space-y-space-lg">
+    <div>
+      <h1 class="font-headline-xl text-headline-xl-mobile sm:text-headline-xl">Hola, {firstName}</h1>
+      <p class="font-body-sm text-body-sm text-on-surface-variant">
+        {profile?.student_code ? `${profile.student_code} · ` : ''}{email}
+      </p>
+    </div>
+
+    <!-- Préstamos activos -->
+    <section class="space-y-space-sm">
+      <h2 class="font-headline-md text-headline-md">Equipos que tienes prestados</h2>
+
+      {activeLoans.length === 0 ? (
+        <p class="font-body-sm text-body-sm text-on-surface-variant bg-surface-container-lowest rounded-xl p-space-md shadow-sm">
+          No tienes equipos prestados en este momento.
+        </p>
+      ) : (
+        activeLoans.map((loan) => {
+          const item = loan.items as any;
+          const overdue = isOverdue(loan.status, loan.expected_return_date);
+          const accessories = [loan.includes_microsd && 'Tarjeta microSD', loan.includes_usb_eth_module && 'Módulo USB/Ethernet'].filter(Boolean);
+          return (
+            <div class="bg-surface-container-lowest rounded-2xl p-space-md shadow-sm space-y-space-sm">
+              <div class="flex items-start justify-between gap-space-sm">
+                <div class="flex flex-col min-w-0">
+                  <span class="font-headline-md text-headline-md text-on-surface font-bold truncate">#{item?.code}</span>
+                  <span class="font-body-sm text-body-sm text-on-surface-variant truncate">{item?.category} · {item?.model}</span>
+                </div>
+                <span
+                  class:list={[
+                    'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-label-sm text-label-sm flex-shrink-0',
+                    overdue ? 'bg-error-container text-error' : 'bg-status-loaned-bg text-status-loaned-text',
+                  ]}
+                >
+                  <span class:list={['w-1.5 h-1.5 rounded-full', overdue ? 'bg-error' : 'bg-status-loaned-dot']}></span>
+                  {overdue ? 'Atrasado' : 'En préstamo'}
+                </span>
+              </div>
+              <div class="bg-surface-container-low rounded-xl p-space-sm grid grid-cols-2 gap-2">
+                <div class="flex flex-col">
+                  <span class="font-label-sm text-label-sm text-on-surface-variant">Fecha inicio</span>
+                  <span class="font-label-md text-label-md text-on-surface font-medium">{formatDate(loan.started_at)}</span>
+                </div>
+                <div class="flex flex-col items-end">
+                  <span class="font-label-sm text-label-sm text-on-surface-variant">Devolución esperada</span>
+                  <span class:list={['font-label-md text-label-md font-semibold', overdue ? 'text-error' : 'text-on-surface']}>
+                    {formatDateOnly(loan.expected_return_date)}
+                  </span>
+                </div>
+              </div>
+              {accessories.length > 0 && (
+                <p class="font-body-sm text-body-sm text-on-surface-variant">Incluye: {accessories.join(', ')}</p>
+              )}
+            </div>
+          );
+        })
+      )}
+    </section>
+
+    <!-- Proyectos -->
+    <section class="space-y-space-sm">
+      <h2 class="font-headline-md text-headline-md">Mis proyectos en GIRSI</h2>
+
+      {projects.length === 0 ? (
+        <p class="font-body-sm text-body-sm text-on-surface-variant bg-surface-container-lowest rounded-xl p-space-md shadow-sm">
+          Aún no estás asignado a ningún proyecto. El administrador del laboratorio te agregará cuando corresponda.
+        </p>
+      ) : (
+        projects.map((project) => {
+          const isActive = project.status === 'activo';
+          return (
+            <div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex flex-col gap-space-xs">
+              <div class="flex items-start justify-between gap-space-sm">
+                <span class="font-label-lg text-label-lg text-on-surface font-semibold">{project.name}</span>
+                <span
+                  class:list={[
+                    'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-label-sm text-label-sm flex-shrink-0',
+                    isActive ? 'bg-status-available-bg text-status-available-text' : 'bg-status-finished-bg text-status-finished-text',
+                  ]}
+                >
+                  {isActive ? 'Activo' : 'Finalizado'}
+                </span>
+              </div>
+              {project.description && <p class="font-body-sm text-body-sm text-on-surface-variant">{project.description}</p>}
+              {project.teammates.length > 0 && (
+                <div class="flex items-center gap-1 text-on-surface-variant">
+                  <span class="material-symbols-outlined text-[16px]">group</span>
+                  <span class="font-label-sm text-label-sm">Con: {project.teammates.join(', ')}</span>
+                </div>
+              )}
+            </div>
+          );
+        })
+      )}
+    </section>
+
+    <!-- Historial -->
+    {pastLoans.length > 0 && (
+      <section class="space-y-space-sm">
+        <h2 class="font-headline-md text-headline-md">Préstamos anteriores</h2>
+        {pastLoans.map((loan) => {
+          const item = loan.items as any;
+          return (
+            <div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex items-center justify-between gap-space-md">
+              <div class="flex flex-col min-w-0">
+                <span class="font-label-lg text-label-lg text-on-surface font-semibold truncate">#{item?.code} · {item?.model}</span>
+                <span class="font-body-sm text-body-sm text-on-surface-variant">
+                  {formatDate(loan.started_at)} — {formatDate(loan.ended_at)}
+                </span>
+              </div>
+              <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-status-finished-bg text-status-finished-text font-label-sm text-label-sm flex-shrink-0">
+                Devuelto
+              </span>
+            </div>
+          );
+        })}
+      </section>
+    )}
+  </div>
+</AppLayout>

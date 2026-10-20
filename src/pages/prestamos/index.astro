@@ -1,0 +1,167 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import { formatDate, isOverdue } from '../../lib/dates';
+
+const { supabase } = Astro.locals;
+
+const q = Astro.url.searchParams.get('q')?.trim() ?? '';
+const statusFilter = Astro.url.searchParams.get('status') ?? 'todos';
+
+const { data } = await supabase
+  .from('loans')
+  .select('id, student_name, student_code, student_email, started_at, ended_at, status, expected_return_date, items(code, category, model)')
+  .order('started_at', { ascending: false });
+
+const allLoans = data ?? [];
+
+const counts = {
+  todos: allLoans.length,
+  activo: allLoans.filter((l) => l.status === 'activo').length,
+  finalizado: allLoans.filter((l) => l.status === 'finalizado').length,
+};
+
+let loans = statusFilter === 'todos' ? allLoans : allLoans.filter((l) => l.status === statusFilter);
+
+if (q) {
+  const needle = q.toLowerCase();
+  loans = loans.filter((l) => {
+    const haystack = [l.student_name, l.student_code, l.student_email, (l.items as any)?.code, (l.items as any)?.category]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(needle);
+  });
+}
+
+function filterHref(status: string) {
+  const params = new URLSearchParams();
+  if (status !== 'todos') params.set('status', status);
+  if (q) params.set('q', q);
+  const qs = params.toString();
+  return qs ? `/prestamos?${qs}` : '/prestamos';
+}
+---
+
+<AppLayout title="Préstamos" description="Listado de préstamos de equipos, con búsqueda por estudiante, código o equipo.">
+  <div class="max-w-3xl mx-auto space-y-space-md">
+    <div class="flex items-start justify-between gap-space-sm">
+      <div>
+        <h1 class="font-headline-xl text-headline-xl-mobile sm:text-headline-xl">Préstamos</h1>
+        <p class="font-body-sm text-body-sm text-on-surface-variant">Control de equipos prestados y asignaciones</p>
+      </div>
+      <a
+        href="/prestamos/nuevo"
+        class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full bg-primary text-on-primary shadow-sm active:scale-95 transition-transform flex-shrink-0"
+      >
+        <span class="material-symbols-outlined text-[18px]">add</span>
+        <span class="font-label-md text-label-md">Nuevo</span>
+      </a>
+    </div>
+
+    <form method="GET" action="/prestamos" class="relative w-full">
+      {statusFilter !== 'todos' && <input type="hidden" name="status" value={statusFilter} />}
+      <div class="absolute inset-y-0 left-3.5 flex items-center pointer-events-none text-outline">
+        <span class="material-symbols-outlined text-[20px]">search</span>
+      </div>
+      <input
+        type="text"
+        name="q"
+        value={q}
+        class="w-full pl-10 pr-4 py-2.5 bg-surface-container-lowest text-on-surface rounded-xl font-body-md text-body-md placeholder:text-outline shadow-sm focus:outline-none focus:bg-surface-container-low transition-colors"
+        placeholder="Buscar estudiante, código o equipo..."
+      />
+    </form>
+
+    <div class="flex items-center gap-1.5 overflow-x-auto pb-1">
+      <a
+        href={filterHref('todos')}
+        class:list={[
+          'px-3.5 py-1.5 rounded-full font-label-sm text-label-sm shadow-sm whitespace-nowrap',
+          statusFilter === 'todos' ? 'bg-primary text-on-primary' : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface',
+        ]}
+      >
+        Todos ({counts.todos})
+      </a>
+      <a
+        href={filterHref('activo')}
+        class:list={[
+          'px-3 py-1.5 rounded-full font-label-sm text-label-sm shadow-sm whitespace-nowrap',
+          statusFilter === 'activo' ? 'bg-primary text-on-primary' : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface',
+        ]}
+      >
+        Activos ({counts.activo})
+      </a>
+      <a
+        href={filterHref('finalizado')}
+        class:list={[
+          'px-3 py-1.5 rounded-full font-label-sm text-label-sm shadow-sm whitespace-nowrap',
+          statusFilter === 'finalizado' ? 'bg-primary text-on-primary' : 'bg-surface-container-lowest text-on-surface-variant hover:text-on-surface',
+        ]}
+      >
+        Finalizados ({counts.finalizado})
+      </a>
+    </div>
+
+    <div class="space-y-space-sm">
+      {loans.length === 0 && (
+        <p class="font-body-sm text-body-sm text-on-surface-variant bg-surface-container-lowest rounded-xl p-space-md shadow-sm">
+          No se encontraron préstamos con estos filtros.
+        </p>
+      )}
+
+      {loans.map((loan) => {
+        const item = loan.items as any;
+        const isActive = loan.status === 'activo';
+        const overdue = isOverdue(loan.status, loan.expected_return_date);
+        return (
+          <a href={`/prestamos/${loan.id}`} class="block bg-surface-container-lowest rounded-2xl p-space-md shadow-sm space-y-space-sm hover:shadow transition-shadow">
+            <div class="flex items-start justify-between gap-space-sm">
+              <div class="flex flex-col min-w-0">
+                <h2 class="font-headline-md text-headline-md text-on-surface font-bold truncate">{loan.student_name}</h2>
+                <div class="flex items-center gap-1.5 text-on-surface-variant">
+                  <span class="font-label-sm text-label-sm">{loan.student_code}</span>
+                  <span class="w-1 h-1 rounded-full bg-outline-variant"></span>
+                  <span class="font-label-sm text-label-sm text-primary font-semibold">#{item?.code}</span>
+                </div>
+              </div>
+              <span
+                class:list={[
+                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-label-sm text-label-sm flex-shrink-0',
+                  overdue
+                    ? 'bg-error-container text-error'
+                    : isActive
+                      ? 'bg-status-loaned-bg text-status-loaned-text'
+                      : 'bg-status-finished-bg text-status-finished-text',
+                ]}
+              >
+                <span class:list={['w-1.5 h-1.5 rounded-full', overdue ? 'bg-error' : isActive ? 'bg-status-loaned-dot' : 'bg-status-finished-dot']}></span>
+                {overdue ? 'Atrasado' : isActive ? 'En Préstamo' : 'Finalizado'}
+              </span>
+            </div>
+
+            <div class="bg-surface-container-low rounded-xl p-space-sm flex flex-col gap-2">
+              <div class="flex items-center justify-between text-on-surface">
+                <span class="font-label-sm text-label-sm text-on-surface-variant">{item?.category ?? 'Equipo'}</span>
+                <span class="font-label-md text-label-md font-semibold truncate ml-2">{item?.model}</span>
+              </div>
+              <div class="grid grid-cols-2 gap-2 pt-1">
+                <div class="flex flex-col">
+                  <span class="font-label-sm text-label-sm text-on-surface-variant">Fecha inicio</span>
+                  <span class="font-label-md text-label-md text-on-surface font-medium">{formatDate(loan.started_at)}</span>
+                </div>
+                <div class="flex flex-col items-end">
+                  <span class="font-label-sm text-label-sm text-on-surface-variant">
+                    {isActive ? 'En curso' : 'Fecha fin'}
+                  </span>
+                  <span class="font-label-md text-label-md text-on-surface font-semibold">
+                    {isActive ? '—' : formatDate(loan.ended_at)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </a>
+        );
+      })}
+    </div>
+  </div>
+</AppLayout>

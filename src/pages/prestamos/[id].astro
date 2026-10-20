@@ -1,0 +1,240 @@
+---
+import AppLayout from '../../layouts/AppLayout.astro';
+import { formatDateTime, formatDateOnly, isOverdue } from '../../lib/dates';
+import { RASPBERRY_PI_CATEGORY } from '../../lib/inventory';
+
+const { id } = Astro.params;
+const { supabase } = Astro.locals;
+
+const { data: loan } = await supabase
+  .from('loans')
+  .select('*, items(code, category, model, description, serial_number)')
+  .eq('id', id)
+  .single();
+
+if (!loan) {
+  return Astro.redirect('/prestamos');
+}
+
+const item = loan.items as any;
+const isRaspberryPi = item?.category === RASPBERRY_PI_CATEGORY;
+const isActive = loan.status === 'activo';
+const overdue = isOverdue(loan.status, loan.expected_return_date);
+
+async function resolvePhotoUrl(path: string | null) {
+  if (!path) return null;
+  const { data } = await supabase.storage.from('loan-photos').createSignedUrl(path, 60 * 60);
+  return data?.signedUrl ?? null;
+}
+
+const topPhotoUrl = await resolvePhotoUrl(loan.photo_top_url);
+const bottomPhotoUrl = await resolvePhotoUrl(loan.photo_bottom_url);
+---
+
+<AppLayout
+  title={`Préstamo ${item?.code ?? ''} · ${loan.student_name}`}
+  breadcrumb={`Préstamos / ${item?.code ?? ''}`}
+  description={`Detalle del préstamo de ${item?.category ?? 'equipo'} ${item?.code ?? ''} a ${loan.student_name}.`}
+>
+  <div class="max-w-5xl mx-auto space-y-space-lg">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-space-sm bg-surface-container-lowest p-space-lg rounded-xl shadow-sm">
+      <div class="flex flex-col gap-space-xs">
+        <div class="flex items-center gap-space-sm flex-wrap">
+          <h1 class="font-headline-lg text-headline-lg text-on-surface tracking-tight">{loan.student_name}</h1>
+          <span
+            class:list={[
+              'inline-flex items-center gap-1.5 px-3 py-1 rounded-full font-label-md text-label-md font-semibold',
+              overdue
+                ? 'bg-error-container text-error'
+                : isActive
+                  ? 'bg-status-loaned-bg text-status-loaned-text'
+                  : 'bg-status-finished-bg text-status-finished-text',
+            ]}
+          >
+            <span class:list={['w-2 h-2 rounded-full', overdue ? 'bg-error' : isActive ? 'bg-status-loaned-dot' : 'bg-status-finished-dot']}></span>
+            {overdue ? 'Atrasado' : isActive ? 'En Préstamo' : 'Finalizado'}
+          </span>
+        </div>
+        <p class="font-body-sm text-body-sm text-on-surface-variant">
+          {loan.student_code} · {item?.category ?? 'Equipo'} #{item?.code}
+        </p>
+      </div>
+
+      <div class="flex items-center gap-space-sm flex-wrap">
+        {isActive && (
+          <form
+            method="POST"
+            action={`/api/loans/${loan.id}/finish`}
+            onsubmit="return confirm('¿Confirmas que recibiste el equipo? Las fotos de entrega se eliminarán.')"
+          >
+            <button
+              type="submit"
+              class="h-10 px-space-md bg-primary hover:bg-primary-container text-on-primary font-label-md text-label-md rounded-lg flex items-center gap-space-xs transition-all shadow-sm"
+            >
+              <span class="material-symbols-outlined text-[18px]">check_circle</span>
+              <span>Marcar como Finalizado</span>
+            </button>
+          </form>
+        )}
+        <form
+          method="POST"
+          action={`/api/loans/${loan.id}/delete`}
+          onsubmit={`return confirm('¿Eliminar este préstamo de forma permanente? Se borrarán también sus fotos. Esta acción no se puede deshacer.')`}
+        >
+          <button
+            type="submit"
+            class="h-10 px-space-md bg-error-container hover:bg-error/20 text-error font-label-md text-label-md rounded-lg flex items-center gap-space-xs transition-colors"
+          >
+            <span class="material-symbols-outlined text-[18px]">delete</span>
+            <span>Eliminar préstamo</span>
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-space-lg items-start">
+      <!-- Columna izquierda -->
+      <div class="lg:col-span-8 flex flex-col gap-space-lg">
+        <!-- Fotos de entrega -->
+        <div class="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
+          <div class="flex items-center gap-space-sm">
+            <span class="material-symbols-outlined text-primary text-[22px]">photo_camera</span>
+            <h2 class="font-headline-md text-headline-md text-on-surface">Fotos de entrega</h2>
+          </div>
+
+          {!isActive && !topPhotoUrl && !bottomPhotoUrl ? (
+          <p class="font-body-sm text-body-sm text-on-surface-variant bg-surface-container-low rounded-lg p-space-md">
+            Las fotos se eliminaron al recibir el equipo.
+          </p>
+          ) : (
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-space-md">
+            {[
+              { label: 'Vista superior', alt: `Vista superior de ${item?.code ?? 'el equipo'} al momento de la entrega`, url: topPhotoUrl },
+              { label: 'Vista inferior', alt: `Vista inferior de ${item?.code ?? 'el equipo'} al momento de la entrega`, url: bottomPhotoUrl },
+            ].map((photo) => (
+              <div class="flex flex-col bg-surface-container-low rounded-lg overflow-hidden">
+                <div class="relative w-full aspect-[4/3] bg-surface-container flex items-center justify-center">
+                  {photo.url ? (
+                    <a href={photo.url} target="_blank" rel="noopener">
+                      <img alt={photo.alt} class="w-full h-full object-cover" src={photo.url} />
+                    </a>
+                  ) : (
+                    <span class="material-symbols-outlined text-outline text-[40px]">image_not_supported</span>
+                  )}
+                </div>
+                <div class="p-space-sm">
+                  <span class="font-label-md text-label-md text-on-surface">{photo.label}</span>
+                  {!photo.url && <p class="font-body-sm text-body-sm text-on-surface-variant">Sin foto registrada</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+          )}
+        </div>
+
+        <!-- Especificaciones del equipo -->
+        <div class="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
+          <div class="flex items-center gap-space-sm">
+            <span class="material-symbols-outlined text-primary text-[22px]">developer_board</span>
+            <h2 class="font-headline-md text-headline-md text-on-surface">Especificaciones del equipo</h2>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-space-md">
+            <div class="p-space-md bg-surface-container-low rounded-lg flex flex-col gap-1">
+              <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">Código</span>
+              <span class="font-label-lg text-label-lg text-on-surface">{item?.code}</span>
+              <span class="font-body-sm text-body-sm text-on-surface-variant">{item?.category}</span>
+            </div>
+            <div class="p-space-md bg-surface-container-low rounded-lg flex flex-col gap-1">
+              <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">Modelo</span>
+              <span class="font-label-lg text-label-lg text-on-surface">{item?.model}</span>
+              {item?.description && <span class="font-body-sm text-body-sm text-on-surface-variant">{item.description}</span>}
+            </div>
+            <div class="p-space-md bg-surface-container-low rounded-lg flex flex-col gap-1">
+              <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">Número de serie</span>
+              <span class="font-label-lg text-label-lg text-on-surface font-mono">{item?.serial_number ?? '—'}</span>
+            </div>
+          </div>
+
+          {isRaspberryPi && (
+          <div class="flex flex-col gap-space-xs pt-space-xs">
+            <span class="font-label-sm text-label-sm text-outline uppercase tracking-wider">Accesorios incluidos</span>
+            <div class="flex flex-wrap gap-space-xs mt-1">
+              {[
+                { included: loan.includes_microsd, label: 'Tarjeta microSD', icon: 'sd_card' },
+                { included: loan.includes_usb_eth_module, label: 'Módulo expansor USB/Ethernet', icon: 'lan' },
+              ].map((accessory) => (
+                <span
+                  class:list={[
+                    'inline-flex items-center gap-1.5 px-space-md py-1.5 rounded-lg font-label-md text-label-md',
+                    accessory.included
+                      ? 'bg-status-available-bg text-status-available-text'
+                      : 'bg-surface-container-low text-on-surface-variant',
+                  ]}
+                >
+                  <span class="material-symbols-outlined text-[16px]">{accessory.included ? 'check_circle' : accessory.icon}</span>
+                  {accessory.label}
+                  {!accessory.included && <span class="text-outline">(no incluido)</span>}
+                </span>
+              ))}
+            </div>
+          </div>
+          )}
+        </div>
+      </div>
+
+      <!-- Columna derecha -->
+      <div class="lg:col-span-4 flex flex-col gap-space-lg">
+        <!-- Info del estudiante -->
+        <div class="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
+          <div class="flex items-center gap-space-xs">
+            <span class="material-symbols-outlined text-primary text-[20px]">school</span>
+            <h3 class="font-label-lg text-label-lg text-on-surface">Información del estudiante</h3>
+          </div>
+          <div class="flex items-center gap-space-md p-space-md bg-surface-container-low rounded-lg">
+            <div class="w-12 h-12 rounded-full bg-primary-container text-on-primary flex items-center justify-center font-headline-md text-headline-md font-bold shadow-sm">
+              {loan.student_name.slice(0, 2).toUpperCase()}
+            </div>
+            <div class="flex flex-col min-w-0">
+              <span class="font-label-lg text-label-lg text-on-surface truncate">{loan.student_name}</span>
+              <span class="font-body-sm text-body-sm text-on-surface-variant font-mono">{loan.student_code}</span>
+            </div>
+          </div>
+          <div class="flex items-center justify-between p-space-sm bg-surface-container-low rounded-md">
+            <div class="flex items-center gap-space-sm truncate">
+              <span class="material-symbols-outlined text-[18px] text-on-surface-variant">mail</span>
+              <span class="font-body-sm text-body-sm text-on-surface truncate">{loan.student_email}</span>
+            </div>
+            <a
+              href={`mailto:${loan.student_email}`}
+              class="text-on-surface-variant hover:text-primary p-1 rounded hover:bg-surface-container transition-colors"
+            >
+              <span class="material-symbols-outlined text-[16px]">open_in_new</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Fechas -->
+        <div class="bg-surface-container-lowest rounded-xl p-space-lg shadow-sm flex flex-col gap-space-md">
+          <div class="flex items-center gap-space-xs">
+            <span class="material-symbols-outlined text-primary text-[20px]">calendar_clock</span>
+            <h3 class="font-label-lg text-label-lg text-on-surface">Fechas</h3>
+          </div>
+          <div class="flex flex-col gap-space-sm">
+            <div class="flex flex-col">
+              <span class="font-label-sm text-label-sm text-outline uppercase">Inicio del préstamo</span>
+              <span class="font-label-lg text-label-lg text-on-surface">{formatDateTime(loan.started_at)}</span>
+            </div>
+            <div class="flex flex-col">
+              <span class="font-label-sm text-label-sm text-outline uppercase">Devolución esperada</span>
+              <span class="font-label-lg text-label-lg text-on-surface">{formatDateOnly(loan.expected_return_date)}</span>
+            </div>
+            <div class="flex flex-col">
+              <span class="font-label-sm text-label-sm text-outline uppercase">Fin del préstamo</span>
+              <span class="font-label-lg text-label-lg text-on-surface">{formatDateTime(loan.ended_at)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</AppLayout>
