@@ -65,7 +65,10 @@ const bottomPhotoUrl = await resolvePhotoUrl(loan.photo_bottom_url);
           <form
             method="POST"
             action={`/api/loans/${loan.id}/finish`}
-            onsubmit="return confirm('¿Confirmas que recibiste el equipo? Las fotos de entrega se eliminarán.')"
+            data-confirm="Se marcará el préstamo como finalizado y se eliminarán las fotos de entrega."
+            data-confirm-title={`¿Recibiste ${item?.code ?? 'el equipo'}?`}
+            data-confirm-action="Marcar como finalizado"
+            data-confirm-tone="primary"
           >
             <button
               type="submit"
@@ -79,7 +82,9 @@ const bottomPhotoUrl = await resolvePhotoUrl(loan.photo_bottom_url);
         <form
           method="POST"
           action={`/api/loans/${loan.id}/delete`}
-          onsubmit={`return confirm('¿Eliminar este préstamo de forma permanente? Se borrarán también sus fotos. Esta acción no se puede deshacer.')`}
+          data-confirm="Se borrarán también sus fotos. Esta acción no se puede deshacer."
+          data-confirm-title="¿Eliminar este préstamo?"
+          data-confirm-action="Eliminar préstamo"
         >
           <button
             type="submit"

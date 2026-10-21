@@ -1,0 +1,143 @@
+---
+/**
+ * Ventana de confirmación de la app (reemplaza al confirm() del navegador).
+ * Cualquier <form> la usa con atributos data-*:
+ *
+ *   data-confirm="Mensaje"                 (obligatorio)
+ *   data-confirm-title="¿Eliminar…?"       (por defecto "¿Estás seguro?")
+ *   data-confirm-action="Eliminar"         (texto del botón; por defecto "Confirmar")
+ *   data-confirm-tone="danger" | "primary" (por defecto "danger")
+ *
+ * Se incluye una sola vez, en AppLayout.
+ */
+---
+
+<dialog
+  id="confirm-dialog"
+  class="confirm-dialog m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl bg-surface-container-lowest text-on-surface shadow-xl p-0 backdrop:bg-on-surface/40 backdrop:backdrop-blur-[2px]"
+  aria-labelledby="confirm-title"
+  aria-describedby="confirm-message"
+>
+  <form method="dialog" class="p-space-lg flex flex-col gap-space-lg">
+    <div class="flex items-start gap-space-md">
+      <span id="confirm-icon-wrap" class="w-11 h-11 rounded-full flex items-center justify-center flex-shrink-0" aria-hidden="true">
+        <span id="confirm-icon" class="material-symbols-outlined text-[24px]"></span>
+      </span>
+      <div class="min-w-0 pt-1">
+        <h2 id="confirm-title" class="font-headline-md text-headline-md text-on-surface break-words"></h2>
+        <p id="confirm-message" class="font-body-md text-body-md text-on-surface-variant mt-space-xs"></p>
+      </div>
+    </div>
+    <div class="flex flex-col-reverse sm:flex-row sm:justify-end gap-space-sm">
+      <!-- autofocus en Cancelar: en una acción destructiva, Enter no debe confirmar por accidente -->
+      <button
+        value="cancel"
+        autofocus
+        class="inline-flex items-center justify-center px-space-md py-2.5 rounded-full font-label-md text-label-md text-on-surface-variant bg-surface-container-low hover:bg-surface-container transition-colors"
+      >
+        Cancelar
+      </button>
+      <button
+        value="confirm"
+        id="confirm-accept"
+        class="inline-flex items-center justify-center gap-1.5 px-space-md py-2.5 rounded-full font-label-md text-label-md shadow-sm active:scale-95 transition-transform"
+      >
+      </button>
+    </div>
+  </form>
+</dialog>
+
+<style>
+  .confirm-dialog[open] {
+    animation: confirm-in 160ms ease-out;
+  }
+  .confirm-dialog[open]::backdrop {
+    animation: confirm-fade 160ms ease-out;
+  }
+  @keyframes confirm-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.98);
+    }
+  }
+  @keyframes confirm-fade {
+    from {
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .confirm-dialog[open],
+    .confirm-dialog[open]::backdrop {
+      animation: none;
+    }
+  }
+</style>
+
+<script>
+  const TONES = {
+    danger: { icon: 'delete', wrap: ['bg-error-container', 'text-error'], button: ['bg-error', 'text-on-error'] },
+    primary: { icon: 'help', wrap: ['bg-primary-fixed', 'text-primary'], button: ['bg-primary', 'text-on-primary'] },
+  } as const;
+  const ALL_TONE_CLASSES = Object.values(TONES).flatMap((t) => [...t.wrap, ...t.button]);
+
+  let pending: { form: HTMLFormElement; submitter: HTMLElement | null } | null = null;
+
+  function open(form: HTMLFormElement, submitter: HTMLElement | null) {
+    const dialog = document.getElementById('confirm-dialog') as HTMLDialogElement | null;
+    if (!dialog) return;
+    const tone = TONES[(form.dataset.confirmTone as keyof typeof TONES) ?? 'danger'] ?? TONES.danger;
+
+    dialog.querySelector('#confirm-title')!.textContent = form.dataset.confirmTitle || '¿Estás seguro?';
+    dialog.querySelector('#confirm-message')!.textContent = form.dataset.confirm || '';
+    dialog.querySelector('#confirm-icon')!.textContent = tone.icon;
+    const wrap = dialog.querySelector('#confirm-icon-wrap')!;
+    const accept = dialog.querySelector('#confirm-accept')!;
+    wrap.classList.remove(...ALL_TONE_CLASSES);
+    wrap.classList.add(...tone.wrap);
+    accept.classList.remove(...ALL_TONE_CLASSES);
+    accept.classList.add(...tone.button);
+    accept.textContent = form.dataset.confirmAction || 'Confirmar';
+
+    pending = { form, submitter };
+    dialog.returnValue = '';
+    dialog.showModal();
+  }
+
+  // Captura: corre antes que el ClientRouter y que el indicador de carga
+  // (Layout.astro), que así ni se enteran de un envío que todavía no se confirmó.
+  document.addEventListener(
+    'submit',
+    (event) => {
+      const form = event.target;
+      if (!(form instanceof HTMLFormElement) || !form.dataset.confirm) return;
+      if (form.dataset.confirmed === 'true') {
+        delete form.dataset.confirmed; // confirmado: dejar pasar este envío
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      open(form, event.submitter);
+    },
+    true,
+  );
+
+  document.addEventListener(
+    'close',
+    (event) => {
+      const dialog = event.target;
+      if (!(dialog instanceof HTMLDialogElement) || dialog.id !== 'confirm-dialog' || !pending) return;
+      const { form, submitter } = pending;
+      pending = null;
+      if (dialog.returnValue !== 'confirm') return;
+      form.dataset.confirmed = 'true';
+      form.requestSubmit(submitter instanceof HTMLButtonElement && submitter.form === form ? submitter : undefined);
+    },
+    true, // 'close' no burbujea: se escucha en captura desde el documento
+  );
+
+  // Clic en el fondo oscuro (fuera de la caja) = cancelar.
+  document.addEventListener('click', (event) => {
+    const dialog = event.target;
+    if (dialog instanceof HTMLDialogElement && dialog.id === 'confirm-dialog') dialog.close('cancel');
+  });
+</script>

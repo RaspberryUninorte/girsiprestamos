@@ -76,7 +76,9 @@ const inputClass =
       </div>
       <form
         method="POST"
-        onsubmit="return confirm('¿Eliminar este proyecto? Los estudiantes dejarán de verlo en su panel.')"
+        data-confirm="Los estudiantes dejarán de verlo en su panel. Esta acción no se puede deshacer."
+        data-confirm-title={`¿Eliminar ${project.name}?`}
+        data-confirm-action="Eliminar proyecto"
       >
         <input type="hidden" name="intent" value="delete" />
         <button

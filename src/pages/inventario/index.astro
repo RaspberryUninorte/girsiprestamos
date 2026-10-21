@@ -7,7 +7,8 @@ const { supabase } = Astro.locals;
 const statusFilter = Astro.url.searchParams.get('status') ?? 'todos';
 const categoryFilter = Astro.url.searchParams.get('categoria') ?? '';
 const added = Number(Astro.url.searchParams.get('agregados') ?? 0);
-const deleteError = Astro.url.searchParams.get('error') === 'en-uso';
+const deleted = Number(Astro.url.searchParams.get('eliminados') ?? 0);
+const skipped = Number(Astro.url.searchParams.get('omitidos') ?? 0);
 
 const { data } = await supabase
   .from('item_status')
@@ -28,6 +29,10 @@ const counts = {
 
 const items = statusFilter === 'todos' ? inCategory : inCategory.filter((i) => i.status === statusFilter);
 
+/** Solo se pueden eliminar equipos disponibles que nunca se prestaron (para no perder historial). */
+const canDelete = (item: (typeof items)[number]) => item.status === 'disponible' && item.total_loans === 0;
+const deletableCount = items.filter(canDelete).length;
+
 function filterHref(status: string, category: string) {
   const params = new URLSearchParams();
   if (status !== 'todos') params.set('status', status);
@@ -35,6 +40,10 @@ function filterHref(status: string, category: string) {
   const qs = params.toString();
   return qs ? `/inventario?${qs}` : '/inventario';
 }
+
+// Tras eliminar se vuelve a esta misma vista (mismos filtros).
+const currentView = filterHref(statusFilter, categoryFilter);
+const equipos = (n: number) => (n === 1 ? '1 equipo' : `${n} equipos`);
 
 const chipClass = (active: boolean) => [
   'px-3 py-1.5 rounded-full font-label-sm text-label-sm shadow-sm whitespace-nowrap',
@@ -63,9 +72,14 @@ const chipClass = (active: boolean) => [
         Se {added === 1 ? 'agregó 1 equipo' : `agregaron ${added} equipos`} al inventario.
       </p>
     )}
-    {deleteError && (
+    {deleted > 0 && (
+      <p class="font-body-sm text-body-sm text-status-available-text bg-status-available-bg rounded-lg px-space-md py-space-sm">
+        Se {deleted === 1 ? 'eliminó 1 equipo' : `eliminaron ${deleted} equipos`} del inventario.
+      </p>
+    )}
+    {skipped > 0 && (
       <p class="font-body-sm text-body-sm text-error bg-error-container/40 rounded-lg px-space-md py-space-sm">
-        No se puede eliminar un equipo que tiene préstamos registrados.
+        {equipos(skipped)} no se {skipped === 1 ? 'pudo' : 'pudieron'} eliminar porque {skipped === 1 ? 'tiene' : 'tienen'} préstamos registrados.
       </p>
     )}
 
@@ -78,17 +92,32 @@ const chipClass = (active: boolean) => [
       </div>
     )}
 
-    <div class="flex items-center gap-1.5 overflow-x-auto pb-1">
-      <a href={filterHref('todos', categoryFilter)} class:list={chipClass(statusFilter === 'todos')}>Todos ({counts.todos})</a>
-      <a href={filterHref('disponible', categoryFilter)} class:list={chipClass(statusFilter === 'disponible')}>
-        Disponibles ({counts.disponible})
-      </a>
-      <a href={filterHref('prestado', categoryFilter)} class:list={chipClass(statusFilter === 'prestado')}>
-        Prestados ({counts.prestado})
-      </a>
+    <div class="flex items-center justify-between gap-space-sm">
+      <div class="flex items-center gap-1.5 overflow-x-auto pb-1 min-w-0">
+        <a href={filterHref('todos', categoryFilter)} class:list={chipClass(statusFilter === 'todos')}>Todos ({counts.todos})</a>
+        <a href={filterHref('disponible', categoryFilter)} class:list={chipClass(statusFilter === 'disponible')}>
+          Disponibles ({counts.disponible})
+        </a>
+        <a href={filterHref('prestado', categoryFilter)} class:list={chipClass(statusFilter === 'prestado')}>
+          Prestados ({counts.prestado})
+        </a>
+      </div>
+      {deletableCount > 0 && (
+        <button
+          type="button"
+          id="select-toggle"
+          class="inline-flex items-center gap-1 px-3 py-1.5 mb-1 rounded-full font-label-sm text-label-sm text-primary bg-surface-container-lowest shadow-sm hover:bg-surface-container-low flex-shrink-0"
+          aria-controls="inventory-list"
+          aria-pressed="false"
+        >
+          <span class="material-symbols-outlined text-[18px]" aria-hidden="true">checklist</span>
+          Seleccionar
+        </button>
+      )}
     </div>
 
-    <div class="space-y-space-sm">
+    <!-- data-selecting (lo pone el script) muestra las casillas y la barra de acciones -->
+    <div id="inventory-list" class="group space-y-space-sm data-[selecting]:pb-28 lg:data-[selecting]:pb-24">
       {items.length === 0 && (
         <p class="font-body-sm text-body-sm text-on-surface-variant bg-surface-container-lowest rounded-xl p-space-md shadow-sm">
           No hay equipos con este filtro.
@@ -97,10 +126,28 @@ const chipClass = (active: boolean) => [
 
       {items.map((item) => {
         const isAvailable = item.status === 'disponible';
-        const canDelete = isAvailable && item.total_loans === 0;
+        const deletable = canDelete(item);
         return (
-          <div class="bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex items-center justify-between gap-space-md">
+          <div
+            class:list={[
+              'bg-surface-container-lowest rounded-xl p-space-md shadow-sm flex items-center justify-between gap-space-md transition-shadow',
+              deletable
+                ? 'group-data-[selecting]:cursor-pointer has-[:checked]:ring-2 has-[:checked]:ring-primary'
+                : 'group-data-[selecting]:opacity-50',
+            ]}
+            data-selectable={deletable ? '' : undefined}
+          >
             <div class="flex items-center gap-space-md min-w-0">
+              {deletable && (
+                <input
+                  type="checkbox"
+                  name="ids"
+                  value={item.id}
+                  form="bulk-delete"
+                  aria-label={`Seleccionar ${item.code}`}
+                  class="hidden group-data-[selecting]:block w-5 h-5 rounded accent-primary flex-shrink-0 cursor-pointer"
+                />
+              )}
               <div class="w-11 h-11 rounded-lg bg-surface-container-low flex items-center justify-center flex-shrink-0 text-primary">
                 <span class="material-symbols-outlined text-[22px]">{item.category === RASPBERRY_PI_CATEGORY ? 'memory' : 'devices_other'}</span>
               </div>
@@ -129,15 +176,21 @@ const chipClass = (active: boolean) => [
                   </a>
                 )}
               </div>
-              {canDelete && (
+              {deletable && (
                 <form
                   method="POST"
-                  action={`/api/items/${item.id}/delete`}
-                  onsubmit={`return confirm('¿Eliminar ${item.code} del inventario?')`}
+                  action="/api/items/delete"
+                  class="group-data-[selecting]:hidden"
+                  data-confirm="Esta acción no se puede deshacer."
+                  data-confirm-title={`¿Eliminar ${item.code} del inventario?`}
+                  data-confirm-action="Eliminar"
                 >
+                  <input type="hidden" name="ids" value={item.id} />
+                  <input type="hidden" name="redirect_to" value={currentView} />
                   <button
                     type="submit"
                     title="Eliminar del inventario"
+                    aria-label={`Eliminar ${item.code}`}
                     class="text-on-surface-variant hover:text-error p-space-xs rounded-lg hover:bg-error-container/40 transition-colors"
                   >
                     <span class="material-symbols-outlined text-[20px]">delete</span>
@@ -150,4 +203,104 @@ const chipClass = (active: boolean) => [
       })}
     </div>
   </div>
+
+  <!-- Barra de acciones de la selección: encima de la barra inferior en celular,
+       y a la derecha de la barra lateral en escritorio. -->
+  {deletableCount > 0 && (
+    <form
+      id="bulk-delete"
+      method="POST"
+      action="/api/items/delete"
+      hidden
+      class="fixed inset-x-0 bottom-16 lg:bottom-6 lg:left-64 z-40 px-space-md pb-safe lg:pb-0 pointer-events-none"
+      data-confirm-action="Eliminar"
+    >
+      <input type="hidden" name="redirect_to" value={currentView} />
+      <div class="pointer-events-auto max-w-3xl mx-auto mb-space-sm lg:mb-0 bg-inverse-surface text-inverse-on-surface rounded-2xl shadow-xl px-space-md py-space-sm flex flex-wrap items-center gap-x-space-md gap-y-space-xs">
+        <p class="font-label-md text-label-md flex-1 min-w-[8rem]" aria-live="polite">
+          <span id="bulk-count">0</span> <span id="bulk-count-label">seleccionados</span>
+        </p>
+        <button type="button" id="bulk-all" class="font-label-md text-label-md text-inverse-primary hover:underline">
+          Seleccionar todos
+        </button>
+        <button type="button" id="bulk-cancel" class="font-label-md text-label-md text-inverse-on-surface/80 hover:text-inverse-on-surface">
+          Cancelar
+        </button>
+        <button
+          type="submit"
+          id="bulk-submit"
+          disabled
+          class="inline-flex items-center gap-1.5 px-space-md py-2 rounded-full bg-error text-on-error font-label-md text-label-md shadow-sm active:scale-95 transition-transform disabled:opacity-40 disabled:active:scale-100"
+        >
+          <span class="material-symbols-outlined text-[18px]" aria-hidden="true">delete</span>
+          Eliminar
+        </button>
+      </div>
+    </form>
+  )}
 </AppLayout>
+
+<script>
+  // Selección múltiple para eliminar varios equipos. Todo va por delegación en
+  // el documento: con <ClientRouter /> este script corre una sola vez, y la
+  // página puede reemplazarse al navegar.
+  const list = () => document.getElementById('inventory-list');
+  const bulkForm = () => document.getElementById('bulk-delete') as HTMLFormElement | null;
+  const checkboxes = () => [...document.querySelectorAll<HTMLInputElement>('input[name="ids"][form="bulk-delete"]')];
+
+  function setSelecting(on: boolean) {
+    const listEl = list();
+    const form = bulkForm();
+    if (!listEl || !form) return;
+    listEl.toggleAttribute('data-selecting', on);
+    form.hidden = !on;
+    document.getElementById('select-toggle')?.setAttribute('aria-pressed', String(on));
+    if (!on) checkboxes().forEach((c) => (c.checked = false));
+    sync();
+  }
+
+  function sync() {
+    const form = bulkForm();
+    if (!form) return;
+    const n = checkboxes().filter((c) => c.checked).length;
+    const total = checkboxes().length;
+    const equipos = n === 1 ? '1 equipo' : `${n} equipos`;
+    document.getElementById('bulk-count')!.textContent = String(n);
+    document.getElementById('bulk-count-label')!.textContent = n === 1 ? 'seleccionado' : 'seleccionados';
+    (document.getElementById('bulk-submit') as HTMLButtonElement).disabled = n === 0;
+    document.getElementById('bulk-all')!.textContent = n === total ? 'Quitar selección' : 'Seleccionar todos';
+    // Textos de la ventana de confirmación (ConfirmDialog).
+    form.dataset.confirm = n > 0 ? `Se ${n === 1 ? 'eliminará' : 'eliminarán'} ${equipos} del inventario. Esta acción no se puede deshacer.` : '';
+    form.dataset.confirmTitle = `¿Eliminar ${equipos}?`;
+    form.dataset.confirmAction = `Eliminar ${equipos}`;
+  }
+
+  document.addEventListener('click', (event) => {
+    const target = event.target as HTMLElement;
+    if (target.closest('#select-toggle')) return setSelecting(!list()?.hasAttribute('data-selecting'));
+    if (target.closest('#bulk-cancel')) return setSelecting(false);
+    if (target.closest('#bulk-all')) {
+      const all = checkboxes();
+      const selectAll = all.some((c) => !c.checked);
+      all.forEach((c) => (c.checked = selectAll));
+      return sync();
+    }
+    // En modo selección, un clic en cualquier parte de la fila marca su casilla.
+    const row = target.closest<HTMLElement>('#inventory-list[data-selecting] [data-selectable]');
+    if (row && !target.closest('input, a, button')) {
+      const box = row.querySelector<HTMLInputElement>('input[name="ids"]');
+      if (box) {
+        box.checked = !box.checked;
+        sync();
+      }
+    }
+  });
+
+  document.addEventListener('change', (event) => {
+    if ((event.target as HTMLElement).matches('input[name="ids"][form="bulk-delete"]')) sync();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && list()?.hasAttribute('data-selecting') && !document.querySelector('dialog[open]')) setSelecting(false);
+  });
+</script>

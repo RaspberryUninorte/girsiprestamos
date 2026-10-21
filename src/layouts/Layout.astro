@@ -133,10 +133,11 @@ const jsonLd = {
   });
   document.addEventListener('astro:page-load', stopLoading);
 
-  // Envíos que el router no intercepta. Si un onsubmit con confirm() fue
-  // cancelado, el evento ya viene con defaultPrevented y no se muestra nada.
+  // Envíos que el router no intercepta. Un envío que espera confirmación
+  // (ConfirmDialog) ya viene con defaultPrevented, y los botones de la propia
+  // ventana (<form method="dialog">) solo la cierran: en ningún caso hay carga.
   document.addEventListener('submit', (event) => {
-    if (event.defaultPrevented) return;
+    if (event.defaultPrevented || (event.target as HTMLFormElement).method === 'dialog') return;
     startLoading(event.submitter ?? submitterOf(event.target as Element));
   });
 

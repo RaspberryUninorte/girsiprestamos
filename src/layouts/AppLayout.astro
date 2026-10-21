@@ -1,5 +1,6 @@
 ---
 import Layout from './Layout.astro';
+import ConfirmDialog from '../components/ConfirmDialog.astro';
 import { navItemsFor, isActiveNavItem } from '../lib/nav';
 
 interface Props {
@@ -141,4 +142,5 @@ const roleLabel = profile?.role === 'admin' ? 'Admin Lab' : 'Estudiante';
       </div>
     </nav>
   </div>
+  <ConfirmDialog />
 </Layout>
